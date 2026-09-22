@@ -81,46 +81,38 @@ def api_score(req: ScoreRequest):
 
 @app.post("/v1/generate_code", response_class=PlainTextResponse)
 def api_generate_code(req: CodeGenerationRequest):
-    system_instructions = (
-        f"You are an expert software architect. Output ONLY valid executable {req.language} code. "
-        "Do not write conversational introductions, do not provide markdown blocks, "
-        "and do not explain your thinking. Start generating code immediately."
-    )
-    
     messages = [
-        {"role": "system", "content": system_instructions},
+        {"role": "system", "content": f"You are an expert software architect. Output ONLY valid executable {req.language} code. Do not write conversational introductions, do not provide markdown blocks, and do not explain your thinking. Start generating code immediately."},
         {"role": "user", "content": req.prompt}
     ]
     
-    text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    model_inputs = tokenizer([text], return_tensors="pt").to(model.device)
+    # Properly format the special tokens for Qwen 2.5
+    prompt = tokenizer.apply_chat_template(
+        messages, 
+        tokenize=False, 
+        add_generation_prompt=True
+    )
     
-    # Create the explicit attention mask to force optimal memory tracking
+    model_inputs = tokenizer([prompt], return_tensors="pt").to(model.device)
     attention_mask = model_inputs.get("attention_mask", torch.ones_like(model_inputs.input_ids))
     
     with torch.no_grad():
         generated_ids = model.generate(
             input_ids=model_inputs.input_ids,
             attention_mask=attention_mask,
-            max_new_tokens=2048,
-            
-            # 🔥 STABLE ACCELERATION PROTOCOLS:
-            use_cache=True,                  # Saves token positions in memory to maximize processing speed
+            max_new_tokens=1024,
+            use_cache=True,
             pad_token_id=tokenizer.eos_token_id,
-            do_sample=True,                  # Required by transformers generation configuration
-            temperature=0.1,                 # Low temperature keeps code clean and precise
-            top_p=0.9
+            do_sample=False
         )
     
-        # Locate this section at the very bottom of your server.py file:
-    new_tokens = generated_ids[len(model_inputs.input_ids):]
+    new_tokens = generated_ids[0][len(model_inputs.input_ids[0]):]
     generated_code = tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
     
-    # 🔥 STRIP MARKDOWN BLOCKS INSTANTLY:
+    # Structural sanitation: strip code block fences if emitted
     if generated_code.startswith("```"):
-        # Split by lines, drop the first line (```python) and the last line (```)
         lines = generated_code.splitlines()
-        if lines[0].startswith("```"):
+        if lines and lines[0].startswith("```"):
             lines = lines[1:]
         if lines and lines[-1].startswith("```"):
             lines = lines[:-1]
